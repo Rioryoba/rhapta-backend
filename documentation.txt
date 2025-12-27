@@ -1,0 +1,290 @@
+Expenses feature: design & implementation document
+===============================================
+
+Purpose
+-------
+This document describes the full workflow, data model, API endpoints, validation rules,
+business logic and implementation notes required to implement a robust "Expenses"
+feature that debits money from an account (cash or bank), records an immutable ledger
+entry, and keeps full traceability.
+
+Goal
+----
+- Allow authorized users (accountant/admin) to create expenses.
+- Ensure account balance is sufficient before debiting.
+- Record the debit in a ledger (account_transactions) and update account balance.
+- Store expense and optional line-items for audit and reporting.
+- Provide APIs for creating, viewing, listing, and (optionally) refunding expenses.
+
+High-level Entities / Tables
+---------------------------
+The feature touches existing and new tables. Below are the tables involved and suggested
+columns.
+
+1) accounts (existing) — important for source of funds
+	- id (bigint, pk)
+	- name (string)
+	- type (enum: 'cash','bank','other')
+	- balance (decimal(15,2))  -- REQUIRED: current available balance
+	- currency (string, nullable)
+	- details (json/text, nullable)
+	- timestamps
+
+2) expenses (create/verify)
+	- id
+	- account_id -> accounts.id  (foreign key)
+	- created_by -> users.id
+	- requested_by -> employees.id (nullable)
+	- received_by -> employees.id (nullable)
+	- description (text)
+	- expense_date (date)
+	- reference (string, nullable)
+	- subtotal (decimal) optional if items used
+	- tax (decimal, nullable)
+	- discount (decimal, nullable)
+	- total (decimal)  -- the amount to be debited from account
+	- status (string) e.g., 'pending','paid' (optional)
+	- currency (string) optional
+	- timestamps, soft deletes
+
+3) expense_items (optional, recommended)
+	- id
+	- expense_id -> expenses.id
+	- description
+	- quantity (int)
+	- unit_price (decimal)
+	- total (decimal)
+	- taxed (boolean) optional
+	- timestamps
+
+4) account_transactions (ledger) — REQUIRED
+	- id
+	- account_id -> accounts.id
+	- type (enum: 'debit','credit')  -- debit reduces account balance (convention)
+	- amount (decimal)
+	- balance_after (decimal)  -- snapshot of account.balance after this transaction
+	- reference_type (string, nullable) e.g., 'expense'
+	- reference_id (bigint, nullable) e.g., expense.id
+	- description (text)
+	- created_by -> users.id
+	- timestamps
+
+5) audit_logs (existing) — use for high-level event recording
+
+
+Relationships
+-------------
+- Account hasMany AccountTransactions
+- Account hasMany Expenses
+- Expense hasMany ExpenseItems
+- Expense belongsTo Account
+- Expense belongsTo User (created_by) and optionally to Employees (requested/received)
+
+
+API Endpoints (proposed)
+------------------------
+Note: Use camelCase request fields in payloads (server should map these to snake_case
+in FormRequest.prepareForValidation or via a base request mapper).
+
+Authentication & Authorization
+- All endpoints require auth. Only users with role 'accountant' or 'admin' can create
+  expenses (middleware: auth:api + role:accountant,admin).
+
+Expenses resource
+- POST /api/expenses  (create)  -- accountant/admin only
+- GET  /api/expenses  (list)    -- auth (filterable)
+- GET  /api/expenses/{id} (show) -- auth (policy to restrict as needed)
+- PUT  /api/expenses/{id} (update) -- admin/accountant (only when pending)
+- DELETE /api/expenses/{id} (delete or reverse) -- admin (or create a reversing transaction)
+- POST /api/expenses/{id}/refund  -- admin/accountant to reverse a paid expense
+
+
+Create payload (recommended structure)
+-------------------------------------
+POST /api/expenses
+Content-Type: application/json
+
+{
+  "accountId": 1,
+  "expenseDate": "2025-10-25",
+  "description": "Office stationery",
+  "reference": "EXP-2025-001",
+  "requestedBy": 3,
+  "receivedBy": 4,
+  "items": [
+	 { "description": "A4 Paper", "quantity": 5, "unitPrice": 3.50 },
+	 { "description": "Stapler", "quantity": 2, "unitPrice": 8.00 }
+  ],
+  "tax": 0,
+  "discount": 0
+}
+
+Server behavior notes:
+- If items present, server computes subtotal = sum(quantity * unitPrice)
+- total = subtotal + tax - discount
+- If client provides a top-level amount field, either validate it matches computed total
+  or prefer computed total and ignore client amount.
+
+
+Validation rules (StoreExpenseRequest)
+-------------------------------------
+- accountId: required|exists:accounts,id
+- expenseDate: required|date
+- items: required|array|min:1 (if using items) OR amount required if items omitted
+- items.*.description: required|string
+- items.*.quantity: required|integer|min:1
+- items.*.unitPrice: required|numeric|min:0
+- requestedBy, receivedBy: nullable|exists:employees,id
+- tax, discount: nullable|numeric|min:0
+
+
+Business logic / Service responsibilities
+----------------------------------------
+Implement logic inside an ExpenseService (or AccountService) with these responsibilities:
+
+Method: createExpense(array $data, User $actor)
+  1) Normalize payload and compute totals (subtotal, tax, discount, total).
+  2) Start DB transaction.
+  3) Load account row FOR UPDATE to obtain a row lock.
+  4) If account.balance < total -> rollback and throw InsufficientFundsException
+	  (return 422 to API client with message and current balance).
+  5) Subtract total from account.balance and update account row.
+  6) Create account_transactions ledger entry with type='debit', balance_after = new balance,
+	  reference_type='expense', reference_id=expense.id (or temporary until created).
+  7) Persist expense and expense_items.
+  8) Update ledger entry.reference_id if needed.
+  9) Create audit_log entry.
+ 10) Commit transaction and return the created Expense.
+
+Notes:
+- Use DB transactions and SELECT ... FOR UPDATE to prevent race conditions on the account balance.
+- Use decimal(15,2) for money. Consider storing cents integers for very high-precision needs.
+
+
+Ledger (account_transactions) details
+------------------------------------
+- Every debit or credit to an account must create a ledger entry.
+- The ledger entry must capture:
+	 - amount (positive), type ('debit' or 'credit')
+	 - balance_after: snapshot after applying the transaction
+	 - reference to related domain object (expense, refund, payment)
+	 - created_by for audit trail
+
+
+Concurrency & correctness
+-------------------------
+- Always use transaction + row locking (FOR UPDATE) on the accounts row when changing balance.
+- Use database constraints (foreign keys) to keep references intact.
+- Consider unique constraints on reference_type/reference_id to avoid double-applying.
+
+
+Policies & Authorization
+------------------------
+- ExpensePolicy with methods:
+	 - create(User): allow if user->role in ['admin','accountant']
+	 - view(User, Expense): allow for admin/accountant or creator
+	 - update/delete(User, Expense): allow only when expense.status == 'pending' and user role admin/accountant
+
+Register the policy in AuthServiceProvider.
+
+
+Controllers & Requests
+----------------------
+- StoreExpenseRequest: performs validation and maps camelCase to snake_case
+- UpdateExpenseRequest: similar to Store but allows partial fields for editable state
+- ExpenseController: minimal endpoints (index, show, store, update, destroy)
+	 - store() delegates to ExpenseService::createExpense and returns ExpenseResource
+
+
+Resources & Filters
+-------------------
+- ExpenseResource: present expense fields and embedded items + account snapshot
+- ExpenseFilter: support filtering by accountId, date range, createdBy, status, requestedBy
+
+
+Testing
+-------
+- Unit tests for ExpenseService:
+	 - test_create_expense_debits_account_and_creates_ledger
+	 - test_create_expense_insufficient_funds_returns_error
+	 - test_concurrent_debits_are_serialized (simulate locking)
+- Integration tests for API endpoints:
+	 - POST /api/expenses happy path
+	 - POST /api/expenses insufficient funds
+	 - Authorization tests (non-accountant cannot create)
+
+
+Migration tasks (example SQL / Laravel schema stubs)
+-------------------------------------------------
+1) Ensure accounts.balance exists (if missing):
+	Schema::table('accounts', function (Blueprint $table) {
+		 $table->decimal('balance', 15, 2)->default(0)->after('type');
+	});
+
+2) Create account_transactions table:
+	Schema::create('account_transactions', function (Blueprint $table) {
+		 $table->id();
+		 $table->foreignId('account_id')->constrained('accounts')->onDelete('cascade');
+		 $table->enum('type', ['debit','credit']);
+		 $table->decimal('amount', 15, 2);
+		 $table->decimal('balance_after', 15, 2);
+		 $table->string('reference_type')->nullable();
+		 $table->unsignedBigInteger('reference_id')->nullable();
+		 $table->text('description')->nullable();
+		 $table->foreignId('created_by')->nullable()->constrained('users')->onDelete('set null');
+		 $table->timestamps();
+	});
+
+3) Create expense_items table (if desired):
+	Schema::create('expense_items', function (Blueprint $table) {
+		 $table->id();
+		 $table->foreignId('expense_id')->constrained('expenses')->onDelete('cascade');
+		 $table->text('description');
+		 $table->integer('quantity')->default(1);
+		 $table->decimal('unit_price', 15, 2);
+		 $table->decimal('total', 15, 2);
+		 $table->boolean('taxed')->default(false);
+		 $table->timestamps();
+	});
+
+
+Developer commands & local testing
+---------------------------------
+- Run new migrations:
+  ```powershell
+  php artisan migrate
+  ```
+- If using queued PDF generation, run the worker:
+  ```powershell
+  php artisan queue:work
+  ```
+- For synchronous queue in dev (no background worker): in .env set `QUEUE_CONNECTION=sync` and re-run the request.
+
+
+Postman / Quick test notes
+--------------------------
+1) Seed the DB (you have seeders). Ensure there is an account with a non-zero balance.
+2) Login as an accountant (or admin) and store token.
+3) POST /api/expenses with payload above. Expect 201 with created expense and updated account snapshot.
+4) Attempt to create an expense larger than the balance to validate error handling.
+
+
+Open decisions for you
+---------------------
+1) Should an expense support multi-currency and conversions? (propose: no, keep same currency as account)
+2) Do you want an approval workflow (pending -> approved -> paid)? (propose: optional, start without)
+3) On delete of paid expense: do you want an automatic reversal transaction (credit) or disable deletion? (propose: create reversal/credit entry)
+
+
+Next steps
+----------
+Tell me which implementation step to start with. I can:
+- A) Inspect existing `accounts` table and add balance column if missing (quick)
+- B) Create migrations for ledger and items
+- C) Implement the ExpenseService + controller create action (safe PoC)
+- D) Implement full CRUD, policies, tests and Postman collection
+
+Once you pick, I will update the todo list and start making changes.
+
+Document last updated: 2025-10-25
+

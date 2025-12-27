@@ -1,0 +1,40 @@
+
+EXPENSES TABLE
+id
+account_id
+categories
+description
+amount
+expense_date
+employee_id
+
+
+CUSTOMERS TABLE
+id
+name
+email
+address
+phone 
+company_name
+
+INVOICES TABLE
+id
+invoice_no
+customer_id
+customer_id
+invoice_date
+due_date
+subtotal
+tax
+discount
+total
+status
+created_by
+
+INVOICE ITEMS
+item_id
+invoice_id
+decription
+quantity
+unit_price
+total

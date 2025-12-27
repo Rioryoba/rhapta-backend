@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Invoice</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 40px;
+            }
+            h1 {
+                text-align: center;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }
+            table,
+            th,
+            td {
+                border: 1px solid #000;
+            }
+            th,
+            td {
+                padding: 10px;
+                text-align: left;
+            }
+            .right {
+                text-align: right;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>INVOICE</h1>
+        <p><b>Invoice No:</b> INV-2025-001</p>
+        <p><b>Date:</b> 29-Sep-2025</p>
+        <p><b>Due Date:</b> 14-Oct-2025</p>
+
+        <h3>Bill To:</h3>
+        <p>Ritcosmetics Ltd<br />123 Business Street<br />Dar es Salaam</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th>Qty</th>
+                    <th>Unit Price</th>
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Supply of cosmetics</td>
+                    <td>10</td>
+                    <td>50,000</td>
+                    <td>500,000</td>
+                </tr>
+                <tr>
+                    <td>Delivery charges</td>
+                    <td>1</td>
+                    <td>20,000</td>
+                    <td>20,000</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3 class="right">Subtotal: 520,000 TZS</h3>
+        <h3 class="right">VAT (18%): 93,600 TZS</h3>
+        <h2 class="right">Total Due: 613,600 TZS</h2>
+
+        <p>
+            <b>Payment Instructions:</b><br />
+            CRDB Bank - Account No: 123456789<br />
+            Lee Company Limited
+        </p>
+
+        <p><i>Thank you for your business!</i></p>
+    </body>
+</html>
