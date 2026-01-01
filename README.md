@@ -1,2 +1,0 @@
-# rhapta
-rhapta management system
